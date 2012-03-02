@@ -1,0 +1,34 @@
+From a94c42c5e244f5cf3bbf802960e97d574b30f3e2 Mon Sep 17 00:00:00 2001
+From: Rob Clark <rob@ti.com>
+Date: Fri, 2 Dec 2011 21:25:21 -0600
+Subject: [PATCH 06/10] add mpeg4 support to gst decoder
+
+---
+ .../DVDCodecs/Video/DVDVideoCodecGStreamer.cpp     |   11 ++++++++++-
+ 1 files changed, 10 insertions(+), 1 deletions(-)
+
+diff --git a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp
+index 48d66e0..2040d11 100644
+--- a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp
++++ b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp
+@@ -356,7 +356,16 @@ GstCaps *CDVDVideoCodecGStreamer::CreateVideoCaps(CDVDStreamInfo &hints, CDVDCod
+     case CODEC_ID_H264:
+       caps = gst_caps_new_simple ("video/x-h264", NULL);
+       break;
+-
++    case CODEC_ID_MPEG4:
++      caps = gst_caps_new_simple ("video/mpeg", NULL);
++      if (caps)
++      {
++        gst_caps_set_simple(caps,
++            "mpegversion", G_TYPE_INT, 4,
++            "systemstream", G_TYPE_BOOLEAN, false,
++            NULL);
++      }
++      break;
+     default:
+       printf("GStreamer: codec: unkown = %i\n", hints.codec);
+       break;
+-- 
+1.7.5.4
+

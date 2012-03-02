@@ -1,0 +1,412 @@
+From e77e65ddcc60d4c04d042dffb685a2384f2f65ab Mon Sep 17 00:00:00 2001
+From: Rob Clark <rob@ti.com>
+Date: Fri, 2 Dec 2011 22:45:13 -0600
+Subject: [PATCH 07/10] new approach to eglImage ref/unref
+
+This avoids problems when the decoder is deleted before the renderer
+cleans up.
+---
+ xbmc/cores/VideoRenderers/LinuxRendererGLES.cpp    |   40 +++------
+ xbmc/cores/VideoRenderers/LinuxRendererGLES.h      |    4 +-
+ .../dvdplayer/DVDCodecs/Video/DVDVideoCodec.h      |   40 ++-------
+ .../DVDCodecs/Video/DVDVideoCodecGStreamer.cpp     |   91 +++++++++++++-------
+ .../DVDCodecs/Video/DVDVideoCodecGStreamer.h       |    6 --
+ 5 files changed, 85 insertions(+), 96 deletions(-)
+
+diff --git a/xbmc/cores/VideoRenderers/LinuxRendererGLES.cpp b/xbmc/cores/VideoRenderers/LinuxRendererGLES.cpp
+index 43bf3f0..c41ac6a 100644
+--- a/xbmc/cores/VideoRenderers/LinuxRendererGLES.cpp
++++ b/xbmc/cores/VideoRenderers/LinuxRendererGLES.cpp
+@@ -138,11 +138,11 @@ CLinuxRendererGLES::CLinuxRendererGLES()
+ void CLinuxRendererGLES::UnRefBuf(int index)
+ {
+   YUVBUFFER &buf = m_buffers[index];
+-  if (buf.eglImage)
+-    buf.decoder->ReleaseEGLImage(buf.eglImage, buf.origBuf);
+-  buf.eglImage = NULL;
+-  buf.origBuf = NULL;
+-  buf.decoder = NULL;
++  if (buf.eglImageHandle)
++  {
++    delete buf.eglImageHandle;
++    buf.eglImageHandle = NULL;
++  }
+ }
+ 
+ CLinuxRendererGLES::~CLinuxRendererGLES()
+@@ -306,7 +306,7 @@ void CLinuxRendererGLES::CalculateTextureSourceRects(int source, int num_planes)
+   YUVFIELDS& fields =  buf.fields;
+ 
+   // calculate the source rectangle
+-  for(int field = 0; field < (buf.eglImage ? 1 : 3); field++)
++  for(int field = 0; field < (buf.eglImageHandle ? 1 : 3); field++)
+   {
+     for(int plane = 0; plane < num_planes; plane++)
+     {
+@@ -710,7 +710,6 @@ void CLinuxRendererGLES::LoadShaders(int field)
+     case RENDER_METHOD_SOFTWARE:
+     default:
+       {
+-printf("fail SW!!\n");
+         // Use software YUV 2 RGB conversion if user requested it or GLSL failed
+         m_renderMethod = RENDER_SW ;
+         CLog::Log(LOGNOTICE, "GL: Using software color conversion/RGBA rendering");
+@@ -866,7 +865,7 @@ void CLinuxRendererGLES::RenderSinglePass(int index, int field)
+   glEnable(m_textureTarget);
+   glBindTexture(m_textureTarget, planes[0].id);
+ 
+-  if (!buf.eglImage)
++  if (!buf.eglImageHandle)
+   {
+     // U
+     glActiveTexture(GL_TEXTURE1);
+@@ -906,7 +905,7 @@ void CLinuxRendererGLES::RenderSinglePass(int index, int field)
+ 
+   glVertexAttribPointer(vertLoc, 3, GL_FLOAT, 0, 0, m_vert);
+   glVertexAttribPointer(Yloc, 2, GL_FLOAT, 0, 0, m_tex[0]);
+-  if (!buf.eglImage)
++  if (!buf.eglImageHandle)
+   {
+     glVertexAttribPointer(Uloc, 2, GL_FLOAT, 0, 0, m_tex[1]);
+     glVertexAttribPointer(Vloc, 2, GL_FLOAT, 0, 0, m_tex[2]);
+@@ -914,7 +913,7 @@ void CLinuxRendererGLES::RenderSinglePass(int index, int field)
+ 
+   glEnableVertexAttribArray(vertLoc);
+   glEnableVertexAttribArray(Yloc);
+-  if (!buf.eglImage)
++  if (!buf.eglImageHandle)
+   {
+     glEnableVertexAttribArray(Uloc);
+     glEnableVertexAttribArray(Vloc);
+@@ -928,7 +927,7 @@ void CLinuxRendererGLES::RenderSinglePass(int index, int field)
+   m_vert[0][2] = m_vert[1][2] = m_vert[2][2] = m_vert[3][2] = 0.0f;
+ 
+   // Setup texture coordinates
+-  for (int i = 0; i < (buf.eglImage ? 1 : 3); i++)
++  for (int i = 0; i < (buf.eglImageHandle ? 1 : 3); i++)
+   {
+     m_tex[i][0][0] = m_tex[i][3][0] = planes[i].rect.x1;
+     m_tex[i][0][1] = m_tex[i][1][1] = planes[i].rect.y1;
+@@ -945,7 +944,7 @@ void CLinuxRendererGLES::RenderSinglePass(int index, int field)
+ 
+   glDisableVertexAttribArray(vertLoc);
+   glDisableVertexAttribArray(Yloc);
+-  if (!buf.eglImage)
++  if (!buf.eglImageHandle)
+   {
+     glDisableVertexAttribArray(Uloc);
+     glDisableVertexAttribArray(Vloc);
+@@ -1162,9 +1161,6 @@ void CLinuxRendererGLES::RenderSoftware(int index, int field)
+ {
+   YUVPLANES &planes = m_buffers[index].fields[field];
+ 
+-// XXX for debugging
+-abort();
+-
+   glDisable(GL_DEPTH_TEST);
+ 
+   // Y
+@@ -1413,16 +1409,13 @@ void CLinuxRendererGLES::UploadEGLIMAGETexture(int index)
+   if (!(im.flags&IMAGE_FLAG_READY))
+ #endif
+   {
+-printf("fail READY!\n");
+     m_eventTexturesDone[index]->Set();
+     return;
+   }
+ 
+   glEnable(m_textureTarget);
+   glBindTexture(m_textureTarget, plane.id);
+-  glEGLImageTargetTexture2DOES(m_textureTarget, buf.eglImage);
+-
+-  // XXX deal with cropping!!
++  glEGLImageTargetTexture2DOES(m_textureTarget, buf.eglImageHandle->Get());
+ 
+   VerifyGLState();
+ 
+@@ -1436,7 +1429,6 @@ printf("fail READY!\n");
+ void CLinuxRendererGLES::DeleteEGLIMAGETexture(int index)
+ {
+   YUVBUFFER &buf    = m_buffers[index];
+-  YV12Image &im     = buf.image;
+   YUVFIELDS &fields = buf.fields;
+   YUVPLANE  &plane  = fields[0][0];   /* for eglimageexternal, use only one texture */
+ 
+@@ -1459,7 +1451,6 @@ void CLinuxRendererGLES::DeleteEGLIMAGETexture(int index)
+ bool CLinuxRendererGLES::CreateEGLIMAGETexture(int index)
+ {
+   YUVBUFFER &buf    = m_buffers[index];
+-  YV12Image &im     = buf.image;
+   YUVFIELDS &fields = buf.fields;
+   YUVPLANE  &plane  = fields[0][0];   /* for eglimageexternal, use only one texture */
+ 
+@@ -1943,7 +1934,7 @@ void CLinuxRendererGLES::SetTextureFilter(GLenum method)
+       glTexParameteri(m_textureTarget, GL_TEXTURE_MAG_FILTER, method);
+       VerifyGLState();
+ 
+-      if (!((m_renderMethod & RENDER_SW) || buf.eglImage))
++      if (!((m_renderMethod & RENDER_SW) || buf.eglImageHandle))
+       {
+         glBindTexture(m_textureTarget, fields[f][1].id);
+         glTexParameteri(m_textureTarget, GL_TEXTURE_MIN_FILTER, method);
+@@ -2091,9 +2082,8 @@ void CLinuxRendererGLES::AddProcessor(DVDVideoPicture *picture)
+   im.height     = m_sourceHeight;
+   im.cshift_x   = 1;
+   im.cshift_y   = 1;
+-  buf.origBuf   = picture->origBuf;
+-  buf.decoder   = picture->decoder;
+-  buf.eglImage  = buf.decoder->GetEGLImage(buf.origBuf);
++  buf.eglImageHandle = picture->eglImageHandle;
++  picture->eglImageHandle = NULL;
+ 
+   plane.texwidth  = im.width;
+   plane.texheight = im.height;
+diff --git a/xbmc/cores/VideoRenderers/LinuxRendererGLES.h b/xbmc/cores/VideoRenderers/LinuxRendererGLES.h
+index 69722ec..0d17df8 100644
+--- a/xbmc/cores/VideoRenderers/LinuxRendererGLES.h
++++ b/xbmc/cores/VideoRenderers/LinuxRendererGLES.h
+@@ -255,9 +255,7 @@ protected:
+     YV12Image image;
+     unsigned  flipindex; /* used to decide if this has been uploaded */
+ 
+-    EGLImageKHR eglImage;
+-    void *origBuf;
+-    CDVDVideoCodec *decoder;
++    EGLImageHandle *eglImageHandle;
+ 
+ #ifdef HAVE_LIBOPENMAX
+     OpenMaxVideoBuffer *openMaxBuffer;
+diff --git a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodec.h b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodec.h
+index c1bd1b2..96112b9 100644
+--- a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodec.h
++++ b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodec.h
+@@ -44,6 +44,13 @@ struct OpenMaxVideoBuffer;
+   struct __CVBuffer;
+ #endif
+ 
++class EGLImageHandle
++{
++public:
++  virtual ~EGLImageHandle() {}
++  virtual EGLImageKHR Get() = 0;
++};
++
+ // should be entirely filled by all codecs
+ struct DVDVideoPicture
+ {
+@@ -80,13 +87,7 @@ struct DVDVideoPicture
+ 
+   // XXX move this into union, and use instead of data/iLineSize!!
+     struct {
+-      /* to allow the decoder to hold a reference to the original
+-       * buffer that the eglImage was created from:
+-       */
+-      void *origBuf;
+-      /* to implement unref of buffer:
+-       */
+-      CDVDVideoCodec *decoder;
++      EGLImageHandle *eglImageHandle;
+     };
+ 
+   unsigned int iFlags;
+@@ -199,6 +200,8 @@ public:
+    */ 
+   virtual bool ClearPicture(DVDVideoPicture* pDvdVideoPicture)
+   {
++//    if (pDvdVideoPicture->eglImageHandle)
++//      delete pDvdVideoPicture->eglImageHandle;
+     memset(pDvdVideoPicture, 0, sizeof(DVDVideoPicture));
+     return true;
+   }
+@@ -216,29 +219,6 @@ public:
+   }
+ 
+   /*
+-   * Allow the decoder that supports eglImage to return an eglImage.  The
+-   * decoder should put some sort of handle (or whatever it prefers) in to
+-   * pDvdVideoPicture->origBuf.  This gets converted to an EGLImage by this
+-   * method for buffers that the renderer will actually display (ie. not
+-   * dropped).  And released by ::ReleaseEGLImage after they are rendered.
+-   * This allows the decoder maximum flexibility, ie. up front creation of
+-   * all the eglBuffers, or wrapping codec buffers after decode.
+-   */
+-  virtual EGLImageKHR GetEGLImage(void *origBuf)
+-  {
+-    return NULL; /* default not supported */
+-  }
+-
+-  /*
+-   * allow the decoder that supports eglImage to release the eglImage
+-   * (if needed)
+-   */
+-  virtual void ReleaseEGLImage(EGLImageKHR eglImage, void *origBuf)
+-  {
+-    /* default no-op */
+-  }
+-
+-  /*
+    * will be called by video player indicating if a frame will eventually be dropped
+    * codec can then skip actually decoding the data, just consume the data set picture headers
+    */
+diff --git a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp
+index 2040d11..d1a723f 100644
+--- a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp
++++ b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp
+@@ -33,6 +33,9 @@
+ 
+ bool CDVDVideoCodecGStreamer::gstinitialized = false;
+ 
++static PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
++static PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
++
+ 
+ #ifndef EGLIMAGE_FLAGS_YUV_CONFORMANT_RANGE
+ // XXX these should come from some egl header??
+@@ -52,6 +55,56 @@ bool CDVDVideoCodecGStreamer::gstinitialized = false;
+ #  define EGL_GL_VIDEO_YUV_FLAGS_TI       0x3336  /* eglCreateImageKHR attribute */
+ #endif
+ 
++class GSTEGLImageHandle : public EGLImageHandle
++{
++public:
++  GSTEGLImageHandle(GstBuffer *buf, gint width, gint height, guint32 format)
++  {
++    this->eglImage = NULL;
++    this->buf = buf;
++    this->width = width;
++    this->height = height;
++    this->format = format;
++  }
++
++  virtual ~GSTEGLImageHandle()
++  {
++    if (eglImage)
++    {
++      eglDestroyImageKHR(g_Windowing.GetEGLDisplay(), eglImage);
++      gst_buffer_unref(buf);
++    }
++  }
++
++protected:
++  virtual EGLImageKHR Get()
++  {
++    if (!eglImage)
++    {
++      GstBuffer *buf = gst_buffer_ref(this->buf);
++      EGLint attr[] = {
++          EGL_GL_VIDEO_FOURCC_TI,      format,
++          EGL_GL_VIDEO_WIDTH_TI,       width,
++          EGL_GL_VIDEO_HEIGHT_TI,      height,
++          EGL_GL_VIDEO_BYTE_SIZE_TI,   GST_BUFFER_SIZE(buf),
++          // TODO: pick proper YUV flags..
++          EGL_GL_VIDEO_YUV_FLAGS_TI,   EGLIMAGE_FLAGS_YUV_CONFORMANT_RANGE |
++          EGLIMAGE_FLAGS_YUV_BT601,
++          EGL_NONE
++      };
++      eglImage = eglCreateImageKHR(g_Windowing.GetEGLDisplay(),
++          EGL_NO_CONTEXT, EGL_RAW_VIDEO_TI, GST_BUFFER_DATA(buf), attr);
++    }
++    return eglImage;
++  }
++
++private:
++  EGLImageKHR eglImage;
++  gint width, height;
++  guint32 format;
++  GstBuffer *buf;
++};
++
+ 
+ CDVDVideoCodecGStreamer::CDVDVideoCodecGStreamer()
+ {
+@@ -59,6 +112,11 @@ CDVDVideoCodecGStreamer::CDVDVideoCodecGStreamer()
+  {
+     gst_init (NULL, NULL);
+     gstinitialized = true;
++
++    eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)
++        eglGetProcAddress("eglCreateImageKHR");
++    eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)
++        eglGetProcAddress("eglDestroyImageKHR");
+   }
+ 
+   m_initialized = false;
+@@ -72,12 +130,6 @@ CDVDVideoCodecGStreamer::CDVDVideoCodecGStreamer()
+   m_ptsinvalid = true;
+ 
+   m_timebase = 1000.0;
+-
+-  eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)
+-      eglGetProcAddress("eglCreateImageKHR");
+-  eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)
+-      eglGetProcAddress("eglDestroyImageKHR");
+-
+ }
+ 
+ CDVDVideoCodecGStreamer::~CDVDVideoCodecGStreamer()
+@@ -271,8 +323,7 @@ bool CDVDVideoCodecGStreamer::GetPicture(DVDVideoPicture* pDvdVideoPicture)
+     pDvdVideoPicture->iDisplayY      = 0;
+   }
+ 
+-  pDvdVideoPicture->decoder = this;
+-  pDvdVideoPicture->origBuf = m_pictureBuffer;
++  pDvdVideoPicture->eglImageHandle = new GSTEGLImageHandle(m_pictureBuffer, m_width, m_height, m_format);
+   pDvdVideoPicture->format  = DVDVideoPicture::FMT_EGLIMG;
+   pDvdVideoPicture->pts       = (double)GST_BUFFER_TIMESTAMP(m_pictureBuffer) / 1000.0;
+   pDvdVideoPicture->iDuration = (double)GST_BUFFER_DURATION(m_pictureBuffer) / 1000.0;
+@@ -280,30 +331,6 @@ bool CDVDVideoCodecGStreamer::GetPicture(DVDVideoPicture* pDvdVideoPicture)
+   return true;
+ }
+ 
+-EGLImageKHR CDVDVideoCodecGStreamer::GetEGLImage(void *origBuf)
+-{
+-  GstBuffer *buf = gst_buffer_ref((GstBuffer *)origBuf);
+-  EGLint attr[] = {
+-      EGL_GL_VIDEO_FOURCC_TI,      m_format,
+-      EGL_GL_VIDEO_WIDTH_TI,       m_width,
+-      EGL_GL_VIDEO_HEIGHT_TI,      m_height,
+-      EGL_GL_VIDEO_BYTE_SIZE_TI,   GST_BUFFER_SIZE(buf),
+-      // TODO: pick proper YUV flags..
+-      EGL_GL_VIDEO_YUV_FLAGS_TI,   EGLIMAGE_FLAGS_YUV_CONFORMANT_RANGE |
+-                                   EGLIMAGE_FLAGS_YUV_BT601,
+-      EGL_NONE
+-  };
+-  return eglCreateImageKHR(g_Windowing.GetEGLDisplay(),
+-      EGL_NO_CONTEXT, EGL_RAW_VIDEO_TI, GST_BUFFER_DATA(buf), attr);
+-}
+-
+-void CDVDVideoCodecGStreamer::ReleaseEGLImage(EGLImageKHR eglImage, void *origBuf)
+-{
+-  GstBuffer *buf = (GstBuffer *)origBuf;
+-  eglDestroyImageKHR(g_Windowing.GetEGLDisplay(), eglImage);
+-  gst_buffer_unref(buf);
+-}
+-
+ void CDVDVideoCodecGStreamer::SetDropState(bool bDrop)
+ {
+ }
+diff --git a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.h b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.h
+index 7f22a2d..00e4925 100644
+--- a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.h
++++ b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.h
+@@ -39,8 +39,6 @@ public:
+   virtual int Decode(BYTE* pData, int iSize, double dts, double pts);
+   virtual void Reset();
+   virtual bool GetPicture(DVDVideoPicture* pDvdVideoPicture);
+-  virtual EGLImageKHR GetEGLImage(void *origBuf);
+-  virtual void ReleaseEGLImage(EGLImageKHR eglImage, void *origBuf);
+   virtual void SetDropState(bool bDrop);
+   virtual const char* GetName();
+ 
+@@ -80,8 +78,4 @@ private:
+ 
+   bool m_needData;
+   bool m_ptsinvalid;
+-
+-
+-  PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
+-  PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
+ };
+-- 
+1.7.5.4
+

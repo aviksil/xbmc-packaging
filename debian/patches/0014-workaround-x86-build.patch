@@ -1,0 +1,159 @@
+Description: workaround build failure on x86 using HAS_EGL
+Author: Fathi Boudra <fathi.boudra@linaro.org>
+Bug: http://bugs.launchpad.net/bugs/907330
+
+---
+ xbmc/cores/VideoRenderers/RenderManager.cpp                     |    2 ++
+ xbmc/cores/VideoRenderers/VideoShaders/YUV2RGBShader.cpp        |    4 ++--
+ xbmc/cores/dvdplayer/DVDCodecs/DVDFactoryCodec.cpp              |    2 +-
+ xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodec.h            |    8 ++++++++
+ xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp |    2 ++
+ xbmc/cores/dvdplayer/DVDPlayerVideo.cpp                         |    2 ++
+ xbmc/system.h                                                   |    7 +++++--
+ 7 files changed, 22 insertions(+), 5 deletions(-)
+
+--- a/xbmc/cores/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoRenderers/RenderManager.cpp
+@@ -775,8 +775,10 @@ int CXBMCRenderManager::AddVideoPicture(
+   else if(pic.format == DVDVideoPicture::FMT_CVBREF)
+     m_pRenderer->AddProcessor(pic.vtb, &pic);
+ #endif
++#ifdef HAS_EGL
+   else if(pic.format == DVDVideoPicture::FMT_EGLIMG)
+     m_pRenderer->AddProcessor(&pic);
++#endif
+ #ifdef HAVE_LIBVA
+   else if(pic.format == DVDVideoPicture::FMT_VAAPI)
+     m_pRenderer->AddProcessor(*pic.vaapi);
+--- a/xbmc/cores/VideoRenderers/VideoShaders/YUV2RGBShader.cpp
++++ b/xbmc/cores/VideoRenderers/VideoShaders/YUV2RGBShader.cpp
+@@ -263,7 +263,7 @@ BaseYUV2RGBARBShader::BaseYUV2RGBARBShad
+ }
+ #endif
+ 
+-
++#ifdef HAS_EGL
+ //////////////////////////////////////////////////////////////////////
+ // EGLImageExternalShader - YUV2RGB GL_OES_EGL_image_external extension
+ // NOTE: this is a bit ugly, because don't have separate Y/U/V textures
+@@ -317,7 +317,7 @@ bool EGLImageExternalShader::OnEnabled()
+   VerifyGLState();
+   return true;
+ }
+-
++#endif
+ 
+ //////////////////////////////////////////////////////////////////////
+ // YUV2RGBProgressiveShader - YUV2RGB with no deinterlacing
+--- a/xbmc/cores/dvdplayer/DVDCodecs/DVDFactoryCodec.cpp
++++ b/xbmc/cores/dvdplayer/DVDCodecs/DVDFactoryCodec.cpp
+@@ -171,7 +171,7 @@ CDVDVideoCodec* CDVDFactoryCodec::Create
+ 
+   CLog::Log(LOGDEBUG, "CDVDFactoryCodec: compiled in hardware support: %s", hwSupport.c_str());
+ 
+-#if defined(HAVE_LIBGSTREAMER)
++#if defined(HAVE_LIBGSTREAMER) && defined(HAS_EGL)
+   if (!hint.software)
+   {
+       CLog::Log(LOGINFO, "Trying GStreamer Video Decoder...");
+--- a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodec.h
++++ b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodec.h
+@@ -45,6 +45,7 @@ struct OpenMaxVideoBuffer;
+   struct __CVBuffer;
+ #endif
+ 
++#ifdef HAS_EGL
+ class EGLImageHandle
+ {
+ public:
+@@ -58,6 +59,7 @@ public:
+   virtual EGLImageHandle * Ref() = 0;
+   virtual void UnRef() = 0;
+ };
++#endif
+ 
+ // should be entirely filled by all codecs
+ struct DVDVideoPicture
+@@ -93,10 +95,12 @@ struct DVDVideoPicture
+ #endif
+   };
+ 
++#ifdef HAS_EGL
+   // XXX move this into union, and use instead of data/iLineSize!!
+     struct {
+       EGLImageHandle *eglImageHandle;
+     };
++#endif
+ 
+   unsigned int iFlags;
+ 
+@@ -131,7 +135,9 @@ struct DVDVideoPicture
+     FMT_VAAPI,
+     FMT_OMXEGL,
+     FMT_CVBREF,
++#ifdef HAS_EGL
+     FMT_EGLIMG,
++#endif
+   } format;
+ };
+ 
+@@ -208,8 +214,10 @@ public:
+    */ 
+   virtual bool ClearPicture(DVDVideoPicture* pDvdVideoPicture)
+   {
++#ifdef HAS_EGL
+     if (pDvdVideoPicture->eglImageHandle)
+       pDvdVideoPicture->eglImageHandle->UnRef();
++#endif
+     memset(pDvdVideoPicture, 0, sizeof(DVDVideoPicture));
+     return true;
+   }
+--- a/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp
++++ b/xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecGStreamer.cpp
+@@ -29,6 +29,7 @@
+ #include "windowing/WindowingFactory.h"
+ #include <gst/app/gstappsrc.h>
+ #include <gst/app/gstappsink.h>
++#ifdef HAS_EGL
+ #include <EGL/egl.h>
+ 
+ bool CDVDVideoCodecGStreamer::gstinitialized = false;
+@@ -492,3 +493,4 @@ GstCaps *CDVDVideoCodecGStreamer::Create
+ 
+   return caps;
+ }
++#endif
+--- a/xbmc/cores/dvdplayer/DVDPlayerVideo.cpp
++++ b/xbmc/cores/dvdplayer/DVDPlayerVideo.cpp
+@@ -1048,10 +1048,12 @@ int CDVDPlayerVideo::OutputPicture(const
+         flags |= CONF_FLAGS_FORMAT_CVBREF;
+         formatstr = "BGRA";
+         break;
++#ifdef HAS_EGL
+       case DVDVideoPicture::FMT_EGLIMG:
+         flags |= CONF_FLAGS_FORMAT_EGLIMG;
+         formatstr = "EGLIMG";
+         break;
++#endif
+     }
+ 
+     if(m_bAllowFullscreen)
+--- a/xbmc/system.h
++++ b/xbmc/system.h
+@@ -269,11 +269,14 @@
+   #else
+     #include <GLES2/gl2.h>
+     #include <GLES2/gl2ext.h>
+-    #include <EGL/egl.h>
+-    #include <EGL/eglext.h>
+   #endif
+ #endif
+ 
++#ifdef HAS_EGL
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++#endif
++
+ #ifdef HAS_DVD_DRIVE
+ #define HAS_CDDA_RIPPER
+ #endif

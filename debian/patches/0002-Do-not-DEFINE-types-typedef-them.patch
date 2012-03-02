@@ -1,0 +1,25 @@
+From d0fa092ea60fe09a34127d826cb6d68b81837062 Mon Sep 17 00:00:00 2001
+From: Tobias Arrskog <topfs2@xbmc.org>
+Date: Wed, 9 Feb 2011 21:38:00 -0500
+Subject: [PATCH 02/10] Do not DEFINE types, typedef them
+
+---
+ xbmc/linux/PlatformDefs.h |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/xbmc/linux/PlatformDefs.h b/xbmc/linux/PlatformDefs.h
+index 33d1c96..cf01989 100644
+--- a/xbmc/linux/PlatformDefs.h
++++ b/xbmc/linux/PlatformDefs.h
+@@ -148,7 +148,7 @@
+ #define ZeroMemory(dst,size) memset(dst, 0, size)
+ 
+ #define VOID    void
+-#define byte    unsigned char
++typedef unsigned char byte;
+ #define __int8    char
+ #define __int16   short
+ #define __int32   int
+-- 
+1.7.5.4
+
