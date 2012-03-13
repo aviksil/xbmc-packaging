@@ -8,8 +8,9 @@ xbmc (2:11.0~git20120229.f38655f-0ubuntu1~ppa1~oneiric~linaro1) oneiric; urgency
   * Build with mesa library
   * Define MESA_EGL_NO_X11_HEADERS for building with mesa headers
   * Disable DPMS for linarotv-xbmc image
+  * Switch to native packaging due to LP bug #760735
 
- -- Avik Sil <avik.sil@linaro.org>  Fri, 02 Mar 2012 14:33:18 +0530
+ -- Avik Sil <avik.sil@linaro.org>  Tue, 13 Mar 2012 15:16:34 +0530
 
 xbmc (2:11.0~git20111222.22ad8e4-1) experimental; urgency=low
 
